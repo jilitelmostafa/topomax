@@ -4,6 +4,7 @@ import MapComponent, { MapComponentRef } from './components/MapComponent';
 import proj4 from 'proj4';
 
 declare const UTIF: any;
+declare const JSZip: any;
 
 interface ExportData {
   lat: string;
@@ -15,25 +16,26 @@ interface ExportData {
 const App: React.FC = () => {
   const [exportData, setExportData] = useState<ExportData | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isKMLMode, setIsKMLMode] = useState(false);
   const mapComponentRef = useRef<MapComponentRef>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // توليد ملف World File بنظام WGS84
+  const handleKMLUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file && mapComponentRef.current) {
+      setIsKMLMode(true);
+      mapComponentRef.current.loadKML(file);
+    }
+  };
+
   const generateTFW = (extent: number[], width: number, height: number) => {
-    // تحويل زوايا النطاق إلى WGS84
     const minCorner = proj4('EPSG:3857', 'EPSG:4326', [extent[0], extent[1]]);
     const maxCorner = proj4('EPSG:3857', 'EPSG:4326', [extent[2], extent[3]]);
-
     const pixelWidthDegree = (maxCorner[0] - minCorner[0]) / width;
     const pixelHeightDegree = (maxCorner[1] - minCorner[1]) / height;
-
-    // TFW Format (6 lines)
     return [
-      pixelWidthDegree.toFixed(12), // Pixel size in X (Lon)
-      "0.000000000000",            // Rotation
-      "0.000000000000",            // Rotation
-      (-pixelHeightDegree).toFixed(12), // Pixel size in Y (Lat - negative)
-      minCorner[0].toFixed(12),    // X coordinate of top-left pixel
-      maxCorner[1].toFixed(12)     // Y coordinate of top-left pixel
+      pixelWidthDegree.toFixed(12), "0.000000000000", "0.000000000000",
+      (-pixelHeightDegree).toFixed(12), minCorner[0].toFixed(12), maxCorner[1].toFixed(12)
     ].join('\n');
   };
 
@@ -43,81 +45,111 @@ const App: React.FC = () => {
 
     try {
       const result = await mapComponentRef.current.getMapCanvas();
-      if (!result) return;
+      if (!result) throw new Error("Canvas generation failed");
 
       const { canvas, extent } = result;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-      // 1. ملف الصورة TIFF
+      // 1. TIFF Image (With Alpha Channel for Masking)
       const tiffBuffer = UTIF.encodeImage(imgData.data, canvas.width, canvas.height);
-      const tiffBlob = new Blob([tiffBuffer], { type: 'image/tiff' });
-
-      // 2. ملف الإحداثيات TFW (World File)
+      
+      // 2. World File (TFW)
       const tfwContent = generateTFW(extent, canvas.width, canvas.height);
-      const tfwBlob = new Blob([tfwContent], { type: 'text/plain' });
-
-      // 3. ملف التعريف PRJ (WGS84 Projection)
+      
+      // 3. Projection File (PRJ)
       const prjContent = 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]';
-      const prjBlob = new Blob([prjContent], { type: 'text/plain' });
 
-      const baseName = `Map_WGS84_${exportData.lat}_${exportData.lng}`;
+      // 4. Create ZIP Bundle
+      const zip = new JSZip();
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const baseName = isKMLMode ? `Clipped_SIG_${timestamp}` : `Manual_SIG_${timestamp}`;
+      
+      zip.file(`${baseName}.tif`, tiffBuffer);
+      zip.file(`${baseName}.tfw`, tfwContent);
+      zip.file(`${baseName}.prj`, prjContent);
 
-      // وظيفة مساعدة للتنزيل
-      const downloadFile = (blob: Blob, ext: string) => {
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `${baseName}.${ext}`;
-        link.click();
-      };
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const zipUrl = URL.createObjectURL(zipBlob);
+      
+      const link = document.createElement('a');
+      link.href = zipUrl;
+      link.download = `${baseName}.zip`;
+      link.click();
+      URL.revokeObjectURL(zipUrl);
 
-      // تنزيل الحزمة (البرامج تقرأهم معاً إذا كانوا بنفس الاسم في نفس المجلد)
-      downloadFile(tiffBlob, 'tif');
-      setTimeout(() => downloadFile(tfwBlob, 'tfw'), 300);
-      setTimeout(() => downloadFile(prjBlob, 'prj'), 600);
+      setExportData(null);
+      setIsKMLMode(false);
 
     } catch (error) {
       console.error(error);
-      alert("خطأ في التصدير");
+      alert("خطأ أثناء معالجة القناع الجغرافي.");
     } finally {
       setIsDownloading(false);
     }
   };
 
   return (
-    <div className="w-screen h-screen overflow-hidden relative bg-slate-950">
-      <MapComponent ref={mapComponentRef} onSelectionComplete={setExportData} />
+    <div className="w-screen h-screen overflow-hidden relative bg-slate-950 font-sans">
+      <MapComponent 
+        ref={mapComponentRef} 
+        onSelectionComplete={(data) => setExportData(data)} 
+      />
+
+      {/* Tools Menu */}
+      <div className="absolute top-6 left-6 z-10">
+        <div className="bg-white/95 backdrop-blur-xl p-3 rounded-3xl shadow-2xl border border-white/20 flex flex-col gap-4">
+          <input type="file" accept=".kml" className="hidden" ref={fileInputRef} onChange={handleKMLUpload} />
+          <button 
+            onClick={() => fileInputRef.current?.click()}
+            className="w-14 h-14 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl shadow-lg transition-all flex items-center justify-center text-xl active:scale-90"
+            title="تحميل KML للقص المباشر"
+          >
+            <i className="fas fa-layer-group"></i>
+          </button>
+        </div>
+      </div>
 
       {exportData && (
-        <div className="absolute inset-0 z-[2000] bg-white/95 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-right">
-          <button onClick={() => setExportData(null)} className="absolute top-8 right-8 text-slate-400 hover:text-red-500 text-2xl"><i className="fas fa-times"></i></button>
+        <div className="absolute inset-0 z-[2000] bg-black/40 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-right">
+          <div className="bg-white p-10 rounded-[3rem] shadow-[0_40px_100px_-20px_rgba(0,0,0,0.6)] border border-slate-100 max-w-md w-full space-y-8 relative animate-in zoom-in duration-500">
+            <button onClick={() => { setExportData(null); setIsKMLMode(false); }} className="absolute top-8 right-8 text-slate-300 hover:text-red-500 transition-colors"><i className="fas fa-times text-2xl"></i></button>
 
-          <div className="bg-white p-8 rounded-[2rem] shadow-2xl border border-slate-100 max-w-md w-full space-y-6">
-            <div className="text-center space-y-2">
-              <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto text-2xl"><i className="fas fa-globe"></i></div>
-              <h2 className="text-2xl font-bold text-slate-900">تصدير جغرافي WGS84</h2>
-              <p className="text-slate-500 text-sm">سيتم إنشاء حزمة SIG متوافقة مع جميع الأنظمة</p>
+            <div className="text-center space-y-3">
+              <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mx-auto text-3xl shadow-xl ${isKMLMode ? 'bg-amber-100 text-amber-600 animate-pulse' : 'bg-blue-100 text-blue-600'}`}>
+                <i className={isKMLMode ? "fas fa-mask" : "fas fa-crop-alt"}></i>
+              </div>
+              <h2 className="text-3xl font-black text-slate-900">{isKMLMode ? 'قص حسب الحدود' : 'تصدير المنطقة'}</h2>
+              <p className="text-slate-500 font-medium">سيتم تصدير الصورة بدقة داخل حدود المضلع فقط</p>
             </div>
 
-            <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 font-mono text-sm space-y-2">
-              <div className="flex justify-between"><span>{exportData.lat}</span><span className="text-slate-400">Lat:</span></div>
-              <div className="flex justify-between"><span>{exportData.lng}</span><span className="text-slate-400">Lng:</span></div>
-              <div className="pt-2 border-t border-slate-200 flex justify-between font-bold"><span>{exportData.scale}</span><span className="text-slate-400">Scale:</span></div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">الإسقاط</p>
+                <p className="text-sm font-bold text-slate-800">WGS84</p>
+              </div>
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">المقياس</p>
+                <p className="text-sm font-bold text-slate-800">{exportData.scale}</p>
+              </div>
             </div>
 
-            <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
-              <p className="text-blue-800 text-xs font-bold leading-relaxed">
-                <i className="fas fa-check-circle ml-1"></i>
-                ستحصل على 3 ملفات (TIF, TFW, PRJ). 
-                ضعهم في مجلد واحد ليتم التعرف على الإحداثيات تلقائياً في AutoCAD أو QGIS.
-              </p>
+            <div className="space-y-4">
+              <div className="p-4 bg-blue-50 text-blue-800 rounded-2xl text-xs border border-blue-100 leading-relaxed font-bold">
+                <i className="fas fa-shield-alt ml-2"></i>
+                سيتم إنشاء ملف .tif شفاف خارج الحدود المطلوبة لتسهيل التركيب في AutoCAD.
+              </div>
+              
+              <button 
+                onClick={handleDownload} 
+                disabled={isDownloading} 
+                className="w-full bg-slate-900 hover:bg-black text-white py-6 rounded-3xl font-black flex items-center justify-center gap-4 shadow-2xl transition-all active:scale-95 disabled:opacity-50"
+              >
+                {isDownloading ? <i className="fas fa-spinner fa-spin text-2xl"></i> : <i className="fas fa-file-export text-2xl"></i>}
+                <span className="text-xl">تنزيل حزمة ZIP</span>
+              </button>
             </div>
-
-            <button onClick={handleDownload} disabled={isDownloading} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg active:scale-95 disabled:opacity-50">
-              {isDownloading ? <i className="fas fa-sync fa-spin"></i> : <i className="fas fa-download"></i>}
-              <span>تنزيل حزمة الإحداثيات الجغرافية</span>
-            </button>
           </div>
         </div>
       )}
