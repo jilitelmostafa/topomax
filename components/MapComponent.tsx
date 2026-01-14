@@ -6,7 +6,7 @@ import TileLayer from 'ol/layer/Tile';
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
 import XYZ from 'ol/source/XYZ';
-import { fromLonLat, toLonLat } from 'ol/proj';
+import { fromLonLat } from 'ol/proj';
 import Draw, { createBox } from 'ol/interaction/Draw';
 import { Style, Stroke, Fill } from 'ol/style';
 import { ScaleLine, Zoom, FullScreen } from 'ol/control';
@@ -22,6 +22,8 @@ interface MapComponentProps {
 export interface MapComponentRef {
   getMapCanvas: () => Promise<{ canvas: HTMLCanvasElement, extent: number[] } | null>;
   loadKML: (file: File) => void;
+  setDrawTool: (type: 'Rectangle' | 'Polygon' | null) => void;
+  clearAll: () => void;
 }
 
 const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelectionComplete }, ref) => {
@@ -29,7 +31,6 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
   const mapRef = useRef<Map | null>(null);
   const sourceRef = useRef<VectorSource>(new VectorSource());
   const kmlSourceRef = useRef<VectorSource>(new VectorSource());
-  const [activeTool, setActiveTool] = useState<string | null>(null);
 
   useImperativeHandle(ref, () => ({
     loadKML: (file: File) => {
@@ -42,6 +43,7 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
         });
         
         kmlSourceRef.current.clear();
+        sourceRef.current.clear();
         kmlSourceRef.current.addFeatures(features);
         
         if (features.length > 0 && mapRef.current) {
@@ -67,6 +69,44 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
       };
       reader.readAsText(file);
     },
+    setDrawTool: (type) => {
+      if (!mapRef.current) return;
+      mapRef.current.getInteractions().forEach((i) => { if (i instanceof Draw) mapRef.current?.removeInteraction(i); });
+      if (!type) return;
+
+      const draw = new Draw({
+        source: sourceRef.current,
+        type: type === 'Rectangle' ? 'Circle' : 'Polygon',
+        geometryFunction: type === 'Rectangle' ? createBox() : undefined,
+      });
+
+      draw.on('drawstart', () => {
+        sourceRef.current.clear();
+        kmlSourceRef.current.clear();
+      });
+
+      draw.on('drawend', (event) => {
+        const geometry = event.feature.getGeometry();
+        if (!geometry) return;
+        const extent = geometry.getExtent();
+        const center = [(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2];
+        const wgs = convertToWGS84(center[0], center[1]);
+        const scale = calculateScale(mapRef.current?.getView().getZoom() || 13, parseFloat(wgs.lat));
+
+        onSelectionComplete({
+          lat: wgs.lat,
+          lng: wgs.lng,
+          scale: `1/${scale}`,
+          bounds: extent
+        });
+      });
+
+      mapRef.current.addInteraction(draw);
+    },
+    clearAll: () => {
+      sourceRef.current.clear();
+      kmlSourceRef.current.clear();
+    },
     getMapCanvas: async () => {
       if (!mapRef.current) return null;
       const map = mapRef.current;
@@ -84,26 +124,23 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
           const mapContext = mapCanvas.getContext('2d');
           if (!mapContext) return resolve(null);
 
-          // تطبيق القناع (Clipping Mask) إذا كان هناك KML
-          const kmlFeatures = kmlSourceRef.current.getFeatures();
-          if (kmlFeatures.length > 0 && resolution !== undefined) {
+          // Clip by Mask: يشمل الـ KML والرسوم اليدوية
+          const allFeatures = [...kmlSourceRef.current.getFeatures(), ...sourceRef.current.getFeatures()];
+          
+          if (allFeatures.length > 0 && resolution !== undefined) {
             mapContext.beginPath();
-            kmlFeatures.forEach(feature => {
+            allFeatures.forEach(feature => {
               const geom = feature.getGeometry();
               const coords: any[] = [];
-              
-              if (geom instanceof Polygon) {
-                coords.push(geom.getCoordinates());
-              } else if (geom instanceof MultiPolygon) {
-                coords.push(...geom.getCoordinates());
-              }
+              if (geom instanceof Polygon) coords.push(geom.getCoordinates());
+              else if (geom instanceof MultiPolygon) coords.push(...geom.getCoordinates());
 
               coords.forEach(polyCoords => {
-                polyCoords.forEach((ring: any[], ringIdx: number) => {
-                  ring.forEach((coord, coordIdx) => {
+                polyCoords.forEach((ring: any[]) => {
+                  ring.forEach((coord, idx) => {
                     const px = (coord[0] - extent[0]) / resolution;
                     const py = (extent[3] - coord[1]) / resolution;
-                    if (coordIdx === 0) mapContext.moveTo(px, py);
+                    if (idx === 0) mapContext.moveTo(px, py);
                     else mapContext.lineTo(px, py);
                   });
                   mapContext.closePath();
@@ -124,9 +161,8 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
                 const match = transform.match(/^matrix\(([^\(]*)\)$/);
                 if (match) matrix = match[1].split(',').map(Number);
               }
-              if (!matrix) {
-                matrix = [parseFloat(canvas.style.width) / canvas.width, 0, 0, parseFloat(canvas.style.height) / canvas.height, 0, 0];
-              }
+              if (!matrix) matrix = [parseFloat(canvas.style.width) / canvas.width, 0, 0, parseFloat(canvas.style.height) / canvas.height, 0, 0];
+              
               CanvasRenderingContext2D.prototype.setTransform.apply(mapContext, matrix);
               mapContext.drawImage(canvas, 0, 0);
             }
@@ -141,7 +177,6 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
 
   useEffect(() => {
     if (!mapElement.current) return;
-
     const map = new Map({
       target: mapElement.current,
       layers: [
@@ -156,70 +191,25 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
           source: kmlSourceRef.current,
           style: new Style({
             stroke: new Stroke({ color: '#f59e0b', width: 3 }),
-            fill: new Fill({ color: 'rgba(245, 158, 11, 0.05)' }),
+            fill: new Fill({ color: 'rgba(245, 158, 11, 0.1)' }),
           }),
         }),
         new VectorLayer({
           source: sourceRef.current,
           style: new Style({
-            fill: new Fill({ color: 'rgba(59, 130, 246, 0.2)' }),
-            stroke: new Stroke({ color: '#3b82f6', width: 2 }),
+            fill: new Fill({ color: 'rgba(59, 130, 246, 0.15)' }),
+            stroke: new Stroke({ color: '#3b82f6', width: 3, lineDash: [5, 5] }),
           }),
         })
       ],
-      view: new View({ center: fromLonLat([-7.5898, 33.5731]), zoom: 13 }),
-      controls: [new Zoom(), new ScaleLine(), new FullScreen()],
+      view: new View({ center: fromLonLat([-7.5898, 33.5731]), zoom: 6 }),
+      controls: [new Zoom(), new ScaleLine()],
     });
-
     mapRef.current = map;
     return () => map.setTarget(undefined);
   }, []);
 
-  const setDrawInteraction = (type: string | null) => {
-    if (!mapRef.current) return;
-    mapRef.current.getInteractions().forEach((i) => { if (i instanceof Draw) mapRef.current?.removeInteraction(i); });
-    if (!type) { setActiveTool(null); return; }
-    setActiveTool(type);
-
-    const draw = new Draw({
-      source: sourceRef.current,
-      type: 'Circle',
-      geometryFunction: createBox(),
-    });
-
-    draw.on('drawend', (event) => {
-      const geometry = event.feature.getGeometry();
-      if (!geometry) return;
-      const extent = geometry.getExtent();
-      const center = [(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2];
-      const wgs = convertToWGS84(center[0], center[1]);
-      const scale = calculateScale(mapRef.current?.getView().getZoom() || 13, parseFloat(wgs.lat));
-
-      onSelectionComplete({
-        lat: wgs.lat,
-        lng: wgs.lng,
-        scale: `1/${scale}`,
-        bounds: extent
-      });
-      setTimeout(() => sourceRef.current.clear(), 500);
-    });
-
-    mapRef.current.addInteraction(draw);
-  };
-
-  return (
-    <div className="relative w-full h-full">
-      <div ref={mapElement} className="w-full h-full bg-slate-900"></div>
-      <div className="absolute top-6 right-6 z-10 flex flex-col gap-2 bg-white/90 backdrop-blur p-2 rounded-xl shadow-xl border border-white/40">
-        <button onClick={() => setDrawInteraction('Rectangle')} className={`p-3 rounded-lg transition-all ${activeTool === 'Rectangle' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-600 hover:bg-slate-100'}`} title="تحديد منطقة التصدير">
-          <i className="fas fa-expand-alt text-xl"></i>
-        </button>
-        <button onClick={() => { kmlSourceRef.current.clear(); sourceRef.current.clear(); setDrawInteraction(null); }} className="p-3 rounded-lg text-red-500 hover:bg-red-50" title="مسح الخريطة">
-          <i className="fas fa-trash-alt text-xl"></i>
-        </button>
-      </div>
-    </div>
-  );
+  return <div ref={mapElement} className="w-full h-full bg-slate-900"></div>;
 });
 
 export default MapComponent;
