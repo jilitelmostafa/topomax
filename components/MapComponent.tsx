@@ -8,12 +8,12 @@ import VectorSource from 'ol/source/Vector';
 import XYZ from 'ol/source/XYZ';
 import { fromLonLat, toLonLat } from 'ol/proj';
 import Draw, { createBox } from 'ol/interaction/Draw';
-import { Style, Stroke, Fill, Circle as CircleStyle } from 'ol/style';
+import { Style, Stroke, Fill } from 'ol/style';
 import { ScaleLine, Zoom, FullScreen } from 'ol/control';
-import { convertToLambertRaw, calculateScale } from '../services/geoService';
+import { convertToWGS84, calculateScale } from '../services/geoService';
 
 interface MapComponentProps {
-  onSelectionComplete: (data: { x: string, y: string, scale: string, bounds: number[], size: number[] }) => void;
+  onSelectionComplete: (data: { lat: string, lng: string, scale: string, bounds: number[] }) => void;
 }
 
 export interface MapComponentRef {
@@ -51,15 +51,10 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
               let matrix;
               if (transform) {
                 const match = transform.match(/^matrix\(([^\(]*)\)$/);
-                if (match) {
-                  matrix = match[1].split(',').map(Number);
-                }
+                if (match) matrix = match[1].split(',').map(Number);
               }
               if (!matrix) {
-                matrix = [
-                  parseFloat(canvas.style.width) / canvas.width, 0, 0,
-                  parseFloat(canvas.style.height) / canvas.height, 0, 0,
-                ];
+                matrix = [parseFloat(canvas.style.width) / canvas.width, 0, 0, parseFloat(canvas.style.height) / canvas.height, 0, 0];
               }
               CanvasRenderingContext2D.prototype.setTransform.apply(mapContext, matrix);
               mapContext.drawImage(canvas, 0, 0);
@@ -76,29 +71,25 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
   useEffect(() => {
     if (!mapElement.current) return;
 
-    const googleLayer = new TileLayer({
-      source: new XYZ({
-        url: 'https://mt{0-3}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-        maxZoom: 22,
-        crossOrigin: 'anonymous',
-      }),
-    });
-
-    const vectorLayer = new VectorLayer({
-      source: sourceRef.current,
-      style: new Style({
-        fill: new Fill({ color: 'rgba(37, 99, 235, 0.15)' }),
-        stroke: new Stroke({ color: '#2563eb', width: 2.5 }),
-      }),
-    });
-
     const map = new Map({
       target: mapElement.current,
-      layers: [googleLayer, vectorLayer],
-      view: new View({
-        center: fromLonLat([-7.5898, 33.5731]),
-        zoom: 13,
-      }),
+      layers: [
+        new TileLayer({
+          source: new XYZ({
+            url: 'https://mt{0-3}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+            maxZoom: 22,
+            crossOrigin: 'anonymous',
+          }),
+        }),
+        new VectorLayer({
+          source: sourceRef.current,
+          style: new Style({
+            fill: new Fill({ color: 'rgba(59, 130, 246, 0.2)' }),
+            stroke: new Stroke({ color: '#3b82f6', width: 2 }),
+          }),
+        })
+      ],
+      view: new View({ center: fromLonLat([-7.5898, 33.5731]), zoom: 13 }),
       controls: [new Zoom(), new ScaleLine(), new FullScreen()],
     });
 
@@ -108,17 +99,14 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
 
   const setDrawInteraction = (type: string | null) => {
     if (!mapRef.current) return;
-    mapRef.current.getInteractions().forEach((interaction) => {
-      if (interaction instanceof Draw) mapRef.current?.removeInteraction(interaction);
-    });
-
+    mapRef.current.getInteractions().forEach((i) => { if (i instanceof Draw) mapRef.current?.removeInteraction(i); });
     if (!type) { setActiveTool(null); return; }
     setActiveTool(type);
 
-    let draw = new Draw({
+    const draw = new Draw({
       source: sourceRef.current,
-      type: (type === 'Rectangle' ? 'Circle' : type) as any,
-      geometryFunction: type === 'Rectangle' ? createBox() : undefined,
+      type: 'Circle',
+      geometryFunction: createBox(),
     });
 
     draw.on('drawend', (event) => {
@@ -126,23 +114,16 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
       if (!geometry) return;
       const extent = geometry.getExtent();
       const center = [(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2];
-      const lonLat = toLonLat(center);
+      const wgs = convertToWGS84(center[0], center[1]);
+      const scale = calculateScale(mapRef.current?.getView().getZoom() || 13, parseFloat(wgs.lat));
 
-      if (type === 'Rectangle') {
-        const view = mapRef.current?.getView();
-        const lambert = convertToLambertRaw(lonLat[1], lonLat[0]);
-        const scale = calculateScale(view?.getZoom() || 13, lonLat[1]);
-        const size = mapRef.current?.getSize() || [0,0];
-
-        onSelectionComplete({
-          x: lambert.x,
-          y: lambert.y,
-          scale: `1/${Math.round(parseFloat(scale))}`,
-          bounds: extent,
-          size: size
-        });
-        setTimeout(() => sourceRef.current.clear(), 500);
-      }
+      onSelectionComplete({
+        lat: wgs.lat,
+        lng: wgs.lng,
+        scale: `1/${scale}`,
+        bounds: extent
+      });
+      setTimeout(() => sourceRef.current.clear(), 500);
     });
 
     mapRef.current.addInteraction(draw);
@@ -151,12 +132,9 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
   return (
     <div className="relative w-full h-full">
       <div ref={mapElement} className="w-full h-full bg-slate-900"></div>
-      <div className="absolute top-6 right-6 z-10 flex flex-col gap-3 bg-white/90 backdrop-blur p-2.5 rounded-2xl shadow-2xl border border-white/40">
-        <button onClick={() => setDrawInteraction('Rectangle')} className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all ${activeTool === 'Rectangle' ? 'bg-indigo-600 text-white shadow-lg' : 'hover:bg-indigo-50 text-indigo-600'}`}>
-          <i className="fas fa-expand text-lg"></i>
-        </button>
-        <button onClick={() => { sourceRef.current.clear(); setDrawInteraction(null); }} className="w-11 h-11 rounded-xl flex items-center justify-center hover:bg-red-50 text-red-500">
-          <i className="fas fa-trash-alt text-lg"></i>
+      <div className="absolute top-6 right-6 z-10 bg-white/90 backdrop-blur p-2 rounded-xl shadow-xl border border-white/40">
+        <button onClick={() => setDrawInteraction('Rectangle')} className={`p-3 rounded-lg transition-all ${activeTool === 'Rectangle' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-600 hover:bg-slate-100'}`}>
+          <i className="fas fa-expand-alt text-xl"></i>
         </button>
       </div>
     </div>
