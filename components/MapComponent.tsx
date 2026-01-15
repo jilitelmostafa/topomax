@@ -33,6 +33,16 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
   const sourceRef = useRef<VectorSource>(new VectorSource());
   const kmlSourceRef = useRef<VectorSource>(new VectorSource());
 
+  // تعريف النمط الأحمر الشفاف
+  const redBoundaryStyle = new Style({
+    fill: new Fill({ color: 'rgba(0, 0, 0, 0)' }), // شفاف تماماً
+    stroke: new Stroke({ 
+      color: '#ff0000', // أحمر صريح
+      width: 3, 
+      lineDash: undefined // خط متصل للوضوح
+    }),
+  });
+
   useImperativeHandle(ref, () => ({
     setMapScale: (scale) => {
       if (!mapRef.current) return;
@@ -75,12 +85,19 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
       if (!mapRef.current) return;
       mapRef.current.getInteractions().forEach((i) => { if (i instanceof Draw) mapRef.current?.removeInteraction(i); });
       if (!type) return;
+      
       const draw = new Draw({
         source: sourceRef.current,
         type: type === 'Rectangle' ? 'Circle' : 'Polygon',
         geometryFunction: type === 'Rectangle' ? createBox() : undefined,
+        style: redBoundaryStyle, // تطبيق النمط الأحمر أثناء الرسم أيضاً
       });
-      draw.on('drawstart', () => { sourceRef.current.clear(); kmlSourceRef.current.clear(); });
+
+      draw.on('drawstart', () => { 
+        sourceRef.current.clear(); 
+        kmlSourceRef.current.clear(); 
+      });
+
       draw.on('drawend', (event) => {
         const geometry = event.feature.getGeometry();
         if (!geometry) return;
@@ -202,10 +219,7 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
         }),
         new VectorLayer({
           source: sourceRef.current,
-          style: new Style({
-            fill: new Fill({ color: 'rgba(59, 130, 246, 0.1)' }),
-            stroke: new Stroke({ color: '#3b82f6', width: 2.5, lineDash: [6, 4] }),
-          }),
+          style: redBoundaryStyle, // استخدام النمط الأحمر الجديد هنا
         })
       ],
       view: new View({ center: fromLonLat([-7.5898, 33.5731]), zoom: 6, maxZoom: 22 }),
