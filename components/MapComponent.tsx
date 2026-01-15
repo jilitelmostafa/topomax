@@ -17,6 +17,7 @@ import { convertToWGS84, calculateScale, getResolutionFromScale } from '../servi
 
 interface MapComponentProps {
   onSelectionComplete: (data: { lat: string, lng: string, scale: string, bounds: number[] }) => void;
+  mapType: 'satellite' | 'hybrid';
 }
 
 export interface MapComponentRef {
@@ -27,11 +28,12 @@ export interface MapComponentRef {
   setMapScale: (scale: number) => void;
 }
 
-const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelectionComplete }, ref) => {
+const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelectionComplete, mapType }, ref) => {
   const mapElement = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
   const sourceRef = useRef<VectorSource>(new VectorSource());
   const kmlSourceRef = useRef<VectorSource>(new VectorSource());
+  const baseLayerRef = useRef<TileLayer<XYZ> | null>(null);
 
   // تعريف النمط الأحمر الشفاف
   const redBoundaryStyle = new Style({
@@ -39,7 +41,7 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
     stroke: new Stroke({ 
       color: '#ff0000', // أحمر صريح
       width: 3, 
-      lineDash: undefined // خط متصل للوضوح
+      lineDash: undefined 
     }),
   });
 
@@ -90,7 +92,7 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
         source: sourceRef.current,
         type: type === 'Rectangle' ? 'Circle' : 'Polygon',
         geometryFunction: type === 'Rectangle' ? createBox() : undefined,
-        style: redBoundaryStyle, // تطبيق النمط الأحمر أثناء الرسم أيضاً
+        style: redBoundaryStyle,
       });
 
       draw.on('drawstart', () => { 
@@ -198,18 +200,35 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
     }
   }));
 
+  // مراقبة تغيير نوع الخريطة
+  useEffect(() => {
+    if (baseLayerRef.current) {
+      const lyrCode = mapType === 'satellite' ? 's' : 'y';
+      baseLayerRef.current.setSource(new XYZ({
+        url: `https://mt{0-3}.google.com/vt/lyrs=${lyrCode}&x={x}&y={y}&z={z}`,
+        maxZoom: 22,
+        crossOrigin: 'anonymous',
+      }));
+    }
+  }, [mapType]);
+
   useEffect(() => {
     if (!mapElement.current) return;
+    
+    const lyrCode = mapType === 'satellite' ? 's' : 'y';
+    const baseLayer = new TileLayer({
+      source: new XYZ({
+        url: `https://mt{0-3}.google.com/vt/lyrs=${lyrCode}&x={x}&y={y}&z={z}`,
+        maxZoom: 22,
+        crossOrigin: 'anonymous',
+      }),
+    });
+    baseLayerRef.current = baseLayer;
+
     const map = new Map({
       target: mapElement.current,
       layers: [
-        new TileLayer({
-          source: new XYZ({
-            url: 'https://mt{0-3}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
-            maxZoom: 22,
-            crossOrigin: 'anonymous',
-          }),
-        }),
+        baseLayer,
         new VectorLayer({
           source: kmlSourceRef.current,
           style: new Style({
@@ -219,7 +238,7 @@ const MapComponent = forwardRef<MapComponentRef, MapComponentProps>(({ onSelecti
         }),
         new VectorLayer({
           source: sourceRef.current,
-          style: redBoundaryStyle, // استخدام النمط الأحمر الجديد هنا
+          style: redBoundaryStyle,
         })
       ],
       view: new View({ center: fromLonLat([-7.5898, 33.5731]), zoom: 6, maxZoom: 22 }),

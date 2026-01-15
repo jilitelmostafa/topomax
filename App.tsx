@@ -15,6 +15,7 @@ interface ExportData {
 
 type WorkflowStep = 'IDLE' | 'SELECTED' | 'PROCESSING' | 'DONE';
 type ToolType = 'Rectangle' | 'Polygon' | null;
+type MapType = 'satellite' | 'hybrid';
 
 const SCALES = [
   { label: '1:500', value: 500 },
@@ -36,13 +37,13 @@ const App: React.FC = () => {
   const [zipBlob, setZipBlob] = useState<Blob | null>(null);
   const [fileName, setFileName] = useState("");
   const [selectedScale, setSelectedScale] = useState<number>(1000);
+  const [mapType, setMapType] = useState<MapType>('satellite');
   
   const mapComponentRef = useRef<MapComponentRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleScaleChange = (newScale: number) => {
     setSelectedScale(newScale);
-    // تقريب الخريطة فورياً للمقياس الجديد
     mapComponentRef.current?.setMapScale(newScale);
   };
 
@@ -137,7 +138,7 @@ const App: React.FC = () => {
   return (
     <div className="w-screen h-screen flex bg-slate-950 text-white font-sans overflow-hidden">
       {/* Sidebar - Right Side */}
-      <div className="w-96 bg-slate-900/70 backdrop-blur-3xl border-l border-white/10 flex flex-col p-6 z-20 shadow-[-20px_0_60px_rgba(0,0,0,0.8)]">
+      <div className="w-96 bg-slate-900/80 backdrop-blur-3xl border-l border-white/10 flex flex-col p-6 z-20 shadow-[-20px_0_60px_rgba(0,0,0,0.8)]">
         <div className="flex items-center gap-4 mb-8">
           <div className="w-14 h-14 bg-indigo-600 rounded-[22px] flex items-center justify-center text-3xl shadow-2xl shadow-indigo-500/30 border border-indigo-400/20">
             <i className="fas fa-satellite-dish"></i>
@@ -149,20 +150,41 @@ const App: React.FC = () => {
         </div>
 
         <div className="space-y-6 flex-grow overflow-y-auto no-scrollbar">
+          {/* Map Layer Settings */}
+          <div className="bg-slate-800/40 p-5 rounded-3xl border border-white/5 space-y-4">
+             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">طبقة الخريطة الأساسية</label>
+             <div className="flex bg-slate-950 p-1.5 rounded-2xl border border-white/5">
+                <button 
+                  onClick={() => setMapType('satellite')}
+                  className={`flex-1 py-3 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-2 ${mapType === 'satellite' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-white/5'}`}
+                >
+                  <i className="fas fa-globe"></i>
+                  بدون أسماء
+                </button>
+                <button 
+                  onClick={() => setMapType('hybrid')}
+                  className={`flex-1 py-3 rounded-xl text-[11px] font-bold transition-all flex items-center justify-center gap-2 ${mapType === 'hybrid' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-white/5'}`}
+                >
+                  <i className="fas fa-map-marked-alt"></i>
+                  مع الأسماء
+                </button>
+             </div>
+          </div>
+
           {/* Drawing Tools */}
           <div>
             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-4 border-b border-white/5 pb-2">أدوات التحديد الجغرافي</label>
             <div className="grid grid-cols-2 gap-3">
               <button 
                 onClick={() => toggleTool('Rectangle')}
-                className={`p-4 rounded-2xl border transition-all flex flex-col items-center gap-2 ${activeTool === 'Rectangle' ? 'bg-indigo-600 border-indigo-400 shadow-xl' : 'bg-slate-800/40 border-white/5 hover:bg-slate-800'}`}
+                className={`p-4 rounded-2xl border transition-all flex flex-col items-center gap-2 ${activeTool === 'Rectangle' ? 'bg-red-600 border-red-400 shadow-xl' : 'bg-slate-800/40 border-white/5 hover:bg-slate-800'}`}
               >
                 <i className="fas fa-square-full text-xl"></i>
                 <span className="text-[11px] font-bold">مستطيل</span>
               </button>
               <button 
                 onClick={() => toggleTool('Polygon')}
-                className={`p-4 rounded-2xl border transition-all flex flex-col items-center gap-2 ${activeTool === 'Polygon' ? 'bg-indigo-600 border-indigo-400 shadow-xl' : 'bg-slate-800/40 border-white/5 hover:bg-slate-800'}`}
+                className={`p-4 rounded-2xl border transition-all flex flex-col items-center gap-2 ${activeTool === 'Polygon' ? 'bg-red-600 border-red-400 shadow-xl' : 'bg-slate-800/40 border-white/5 hover:bg-slate-800'}`}
               >
                 <i className="fas fa-draw-polygon text-xl"></i>
                 <span className="text-[11px] font-bold">مضلع حر</span>
@@ -197,9 +219,6 @@ const App: React.FC = () => {
                 <i className="fas fa-search-location"></i>
               </div>
             </div>
-            <p className="text-[9px] text-slate-500 mt-4 px-1 text-center font-medium leading-relaxed italic">
-              * اختيار المقياس سيقوم بتقريب الخريطة تلقائياً لتطابق الدقة المطلوبة.
-            </p>
           </div>
 
           {/* Workflow Controller */}
@@ -289,6 +308,7 @@ const App: React.FC = () => {
       <div className="flex-grow relative h-full">
         <MapComponent 
           ref={mapComponentRef} 
+          mapType={mapType}
           onSelectionComplete={(data) => {
             setExportData(data);
             setStep('SELECTED');
@@ -302,7 +322,7 @@ const App: React.FC = () => {
              <div className="w-3 h-3 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_15px_rgba(16,185,129,0.5)]"></div>
              <div className="flex flex-col">
                <span className="text-[10px] font-black uppercase tracking-widest text-emerald-500">System Ready</span>
-               <span className="text-[8px] text-slate-500 font-bold">WGS 84 / Web Mercator</span>
+               <span className="text-[8px] text-slate-500 font-bold">{mapType === 'satellite' ? 'Satellite View' : 'Hybrid View'}</span>
              </div>
           </div>
           <div className="h-6 w-px bg-white/10"></div>
