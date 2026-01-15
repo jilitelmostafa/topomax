@@ -12,7 +12,6 @@ export interface WGS84Coords {
 
 export const convertToWGS84 = (x: number, y: number): WGS84Coords => {
   try {
-    // التحويل من Web Mercator (الخريطة) إلى WGS84
     const coords = proj4('EPSG:3857', 'EPSG:4326', [x, y]);
     return {
       lng: coords[0].toFixed(6),
@@ -23,8 +22,17 @@ export const convertToWGS84 = (x: number, y: number): WGS84Coords => {
   }
 };
 
-export const calculateScale = (zoom: number, lat: number): string => {
-  const metersPerPixel = (Math.cos(lat * Math.PI / 180) * 2 * Math.PI * 6378137) / (256 * Math.pow(2, zoom));
-  const scale = metersPerPixel / 0.000264583333;
+// حساب مقياس الرسم الحقيقي عند خط عرض معين
+export const calculateScale = (resolution: number, lat: number): string => {
+  // المقياس = (الدقة بالبكسل * معامل التصحيح لخط العرض) / حجم البكسل القياسي (0.264583 ملم)
+  const groundResolution = resolution * Math.cos(lat * Math.PI / 180);
+  const scale = groundResolution / 0.000264583333;
   return scale.toFixed(0);
+};
+
+// تحويل مقياس الرسم إلى دقة خريطة (Resolution)
+export const getResolutionFromScale = (scaleValue: number, lat: number): number => {
+  // الدقة = (المقياس * حجم البكسل القياسي) / معامل التصحيح لخط العرض
+  const resolution = (scaleValue * 0.000264583333) / Math.cos(lat * Math.PI / 180);
+  return resolution;
 };
